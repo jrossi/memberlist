@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zmap/go-iptree"
 	"github.com/armon/go-metrics"
 	sockaddr "github.com/hashicorp/go-sockaddr"
 )
@@ -31,6 +32,10 @@ type NetTransportConfig struct {
 	// BindPort is the port to listen on, for each address above.
 	BindPort int
 
+	//Subnets  of allowed address
+	AllowedSubnets []*net.IPnet
+	
+	
 	// Logger is a logger for operator messages.
 	Logger *log.Logger
 }
@@ -45,6 +50,7 @@ type NetTransport struct {
 	wg           sync.WaitGroup
 	tcpListeners []*net.TCPListener
 	udpListeners []*net.UDPConn
+	allowedSubnets *iptree.IPTree
 	shutdown     int32
 }
 
@@ -57,6 +63,7 @@ func NewNetTransport(config *NetTransportConfig) (*NetTransport, error) {
 		return nil, fmt.Errorf("At least one bind address is required")
 	}
 
+	
 	// Build out the new transport.
 	var ok bool
 	t := NetTransport{
@@ -64,6 +71,7 @@ func NewNetTransport(config *NetTransportConfig) (*NetTransport, error) {
 		packetCh: make(chan *Packet),
 		streamCh: make(chan net.Conn),
 		logger:   config.Logger,
+		allowedSubnets: iptree.New(),
 	}
 
 	// Clean up listeners if there's an error.
@@ -103,6 +111,7 @@ func NewNetTransport(config *NetTransportConfig) (*NetTransport, error) {
 		t.udpListeners = append(t.udpListeners, udpLn)
 	}
 
+	
 	// Fire them up now that we've been able to create them all.
 	for i := 0; i < len(config.BindAddrs); i++ {
 		t.wg.Add(2)
@@ -231,6 +240,12 @@ func (t *NetTransport) tcpListen(tcpLn *net.TCPListener) {
 			t.logger.Printf("[ERR] memberlist: Error accepting TCP connection: %v", err)
 			continue
 		}
+		if _, found, err := t.allowedSubnets.Get(conn.RemoteAddr()); err != nil || !found {
+			t.logger.Printf("[ERR] memberlist: TCP packet not in allowedSubnets %s",
+				LogAddress(addr))
+			conn.Close()
+			continue
+		}
 
 		t.streamCh <- conn
 	}
@@ -245,6 +260,7 @@ func (t *NetTransport) udpListen(udpLn *net.UDPConn) {
 		// close as possible to the I/O.
 		buf := make([]byte, udpPacketBufSize)
 		n, addr, err := udpLn.ReadFrom(buf)
+		
 		ts := time.Now()
 		if err != nil {
 			if s := atomic.LoadInt32(&t.shutdown); s == 1 {
@@ -252,6 +268,13 @@ func (t *NetTransport) udpListen(udpLn *net.UDPConn) {
 			}
 
 			t.logger.Printf("[ERR] memberlist: Error reading UDP packet: %v", err)
+			continue
+		}
+		
+		// Allowed subnet checks
+		if _, found, err := t.allowedSubnets.Get(addr); err != nil || !found {
+			t.logger.Printf("[ERR] memberlist: UDP packet not in allowedSubnets %s",
+				LogAddress(addr))
 			continue
 		}
 
