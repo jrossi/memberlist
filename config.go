@@ -215,6 +215,9 @@ type Config struct {
 	// This is a legacy name for backward compatibility but should really be
 	// called PacketBufferSize now that we have generalized the transport.
 	UDPBufferSize int
+	
+	// AllowedSubnets
+	AllowedSubnets []string
 }
 
 // DefaultLANConfig returns a sane set of configurations for Memberlist.
@@ -225,6 +228,9 @@ type Config struct {
 // these values are a good starting point when getting started with memberlist.
 func DefaultLANConfig() *Config {
 	hostname, _ := os.Hostname()
+	as := []*net.IPnet{}
+	holder, _ := net.ParseCIDR("0.0.0.0/0")
+	as = append(as, holder)
 	return &Config{
 		Name:                    hostname,
 		BindAddr:                "0.0.0.0",
@@ -258,6 +264,7 @@ func DefaultLANConfig() *Config {
 
 		HandoffQueueDepth: 1024,
 		UDPBufferSize:     1400,
+		AllowedSubnets:    as,
 	}
 }
 
